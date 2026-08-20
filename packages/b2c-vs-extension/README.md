@@ -26,7 +26,7 @@ Set breakpoints and log points, inspect variables, and step through cartridge co
 
 ### Manage sandbox realms
 
-Create, start, stop, restart, clone, extend, and delete on-demand sandboxes from the Sandbox Realm Explorer. Context menus adapt to each sandbox's current state.
+Create, start, stop, restart, clone, extend, and delete on-demand sandboxes from the Sandbox Realm Explorer. Context menus adapt to each sandbox's current state. From the Command Palette, **Start/Stop/Restart Sandbox** acts on the active status-bar instance.
 
 [![Sandbox Realm Explorer](https://raw.githubusercontent.com/SalesforceCommerceCloud/b2c-developer-tooling/main/docs/vscode-extension/images/sandbox-explorer.png)](https://salesforcecommercecloud.github.io/b2c-developer-tooling/vscode-extension/)
 
@@ -53,7 +53,7 @@ Tail sandbox logs into a VS Code output channel, install Commerce App Packages, 
 ## Get started
 
 1. Open a B2C Commerce project in VS Code.
-2. Add a `dw.json` file at the workspace root or use an existing B2C CLI configuration.
+2. Add a `dw.json` file at the project root or use an existing B2C CLI configuration. The project can be nested inside an open workspace folder.
 3. Select the active instance from the cloud icon in the status bar.
 4. Open an extension view from the activity bar or run an extension command from the Command Palette.
 

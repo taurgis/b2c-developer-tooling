@@ -1,5 +1,67 @@
 # @salesforce/b2c-dx-docs
 
+## 0.3.22
+
+### Patch Changes
+
+- [#631](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/631) [`b0b24b8`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/b0b24b8fae8c57186b94a7dab3a27dfcf85f49f1) - Made MCP project resolution provenance consistent and tool guidance more concise, kept local paths out of tool descriptions, and clarified startup documentation workspace detection. Updated MCP protocol libraries and made tool input schemas reject unknown arguments. (Thanks [@clavery](https://github.com/clavery)!)
+
+## 0.3.21
+
+### Patch Changes
+
+- [#629](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/629) [`1f25b1e`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/1f25b1ed3bf5c778b30ec2de8dff1e26071db5d1) - Added per-call named-instance selection and consistent resolution provenance to project-aware MCP tools, including persisted context for debugger sessions and log watches. Removed the retired Storefront Next MCP toolset in favor of the current Storefront Next agent skills. (Thanks [@clavery](https://github.com/clavery)!)
+
+## 0.3.20
+
+### Patch Changes
+
+- [#627](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/627) [`5f7bff4`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/5f7bff40b53c54ba3f0d9d245bab7c4d5f94c227) - Add a shared global `dw.json` for the CLI, MCP server, and VS Code extension, managed with `b2c setup default-config set|get|unset`; primary and global instances are available together without merging their fields. MCP tools now accept per-call `projectDirectory` and `configPath`; debugger callers must rename `cartridge_directory` to `cartridgeDirectory` and remove `client_id`. (Thanks [@clavery](https://github.com/clavery)!)
+
+## 0.3.19
+
+### Patch Changes
+
+- [`a90f173`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/a90f1730e6ccd366e50a35d8ee91a320fc5301ec) - Make unified configuration inspection recognize all CLI configuration environment variables and aliases, and show resolved authentication, project, service, and safety settings only when configured. (Thanks [@clavery](https://github.com/clavery)!)
+
+- [`a90f173`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/a90f1730e6ccd366e50a35d8ee91a320fc5301ec) - Allow projects to configure a non-sensitive default `siteId` under the package.json `b2c` key for site-aware commands. (Thanks [@clavery](https://github.com/clavery)!)
+
+## 0.3.18
+
+### Patch Changes
+
+- [#615](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/615) [`1f553b3`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/1f553b3e26c57909ce654b61e25f4db537111312) - Added ordered, idempotent site archive import sets with verified WebDAV receipts, retry-until-receipted behavior, and serialized concurrent runners. (Thanks [@clavery](https://github.com/clavery)!)
+
+- [#615](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/615) [`1f553b3`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/1f553b3e26c57909ce654b61e25f4db537111312) - Added the data migrations plugin to the third-party plugins guide so users can discover idempotent, version-controlled IMPEX and scripted deployments. (Thanks [@clavery](https://github.com/clavery)!)
+
+- [#624](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/624) [`02ccc2a`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/02ccc2a1656c4895c2aca7ef2064fd2ff138e9a2) - Import discovered cartridge metadata before migration-directory items, supporting single-archive and ordered-child layouts, an opt-out, and project-configurable recursive source exclusions. (Thanks [@clavery](https://github.com/clavery)!)
+
+- [#618](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/618) [`abec39f`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/abec39fbc4843b00c426c6fc2ac26492e67df11d) - Update the embedded B2C Commerce Script API TypeScript definitions from version 26.7 to 26.9 so IDE IntelliSense reflects the latest platform APIs. (Thanks [@clavery](https://github.com/clavery)!)
+
+## 0.3.17
+
+### Patch Changes
+
+- [#603](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/603) [`94c7ba9`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/94c7ba979716e8401234f48178f488a4e5b29ac3) - Add Codex plugin packaging for the B2C DX MCP server so Codex CLI and Codex in the ChatGPT desktop app can install and load the MCP server directly through the B2C Developer Tooling plugin marketplace. Claude Code marketplace installation remains supported by the same plugin. (Thanks [@clavery](https://github.com/clavery)!)
+
+## 0.3.16
+
+### Patch Changes
+
+- [#592](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/592) [`f6b4ced`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/f6b4ced5d40b8fcd8a9fbaf524f6dcdd83852b02) - Detect nested `dw.json` project roots in VS Code workspaces and allow nested folders to be pinned from Explorer, so parent-folder and multi-root layouts connect to the intended project. (Thanks [@clavery](https://github.com/clavery)!)
+
+- [#590](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/590) [`3fb0871`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/3fb08711a90f3dc216fce5b8418b6fef0a6dfca9) - Document the figma-to-sfnext-pagedesigner plugin in the Agent Skills guide (Thanks [@lukejohnson-sf](https://github.com/lukejohnson-sf)!)
+
+- [#592](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/592) [`f6b4ced`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/f6b4ced5d40b8fcd8a9fbaf524f6dcdd83852b02) - Treat activation of an already-active code version as success, preserve useful OCAPI fault details, and avoid redundant activation choices in VS Code. (Thanks [@clavery](https://github.com/clavery)!)
+
+## 0.3.15
+
+### Patch Changes
+
+- [#581](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/581) [`1fe5ff2`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/1fe5ff2e49b4aef66c81ad9b9c9dd4b92d1da405) - Expose directly related documentation IDs from Salesforce Help child-topic links and Developer Center guide TOCs, including articles previously omitted from composite Help maps or hyphenated topic filenames. CLI and MCP documentation search results can now be paged by ranked position, so agents can traverse the full published content without surfacing future-profiled Help content. (Thanks [@clavery](https://github.com/clavery)!)
+
+- [#587](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/pull/587) [`afeccee`](https://github.com/SalesforceCommerceCloud/b2c-developer-tooling/commit/afecceed7c6e6ac2ab6e5eff1d2f6f8e59692f5b) - Update the VS Code extension docs for its Marketplace and Open VSX launch: lead with installing directly from the editor's Extensions view (search for "Salesforce B2C Commerce"), document Open VSX availability for Cursor, VSCodium, Windsurf, and other VS Code–compatible editors, and clarify that this is the official Salesforce B2C Commerce extension. (Thanks [@clavery](https://github.com/clavery)!)
+
 ## 0.3.14
 
 ### Patch Changes

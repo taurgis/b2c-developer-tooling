@@ -6,7 +6,12 @@
 import {
   resolveConfig,
   EnvSource,
+  getB2CSettingsPath,
+  mergeProjectEnvironment,
+  readB2CSettings,
+  readProjectEnvironment,
   type NormalizedConfig,
+  type ResolveConfigOptions,
   type ResolvedB2CConfig,
   type CreateOAuthOptions,
 } from '@salesforce/b2c-tooling-sdk/config';
@@ -14,6 +19,7 @@ import type {B2CInstance} from '@salesforce/b2c-tooling-sdk/instance';
 import {readFile} from 'fs/promises';
 import * as path from 'path';
 import * as vscode from 'vscode';
+import {findWorkspaceDwJson, isUnscannableRoot} from './workspace-discovery.js';
 
 const DW_JSON = 'dw.json';
 const DOT_ENV = '.env';
@@ -30,40 +36,37 @@ async function pathExists(p: string): Promise<boolean> {
 }
 
 /**
- * Detect the best workspace folder for B2C config resolution.
+ * Detect the best project directory for B2C config resolution.
  *
  * Scans all workspace folders for B2C indicators in priority order:
- * 1. Folder containing dw.json (strongest signal)
+ * 1. Directory containing dw.json (strongest signal; nested directories included)
  * 2. Folder containing .env with SFCC_* variables
  * 3. Folder containing package.json with `b2c` key
  * 4. Falls back to first folder (current behavior)
- *
- * Single-folder workspaces skip scanning (fast path).
  */
 async function detectWorkingDirectory(log: vscode.OutputChannel): Promise<string> {
   const folders = vscode.workspace.workspaceFolders;
   if (!folders || folders.length === 0) {
-    log.appendLine('[Config] No workspace folders open, falling back to process.cwd()');
-    return process.cwd();
+    // No workspace folders (empty window). The extension can still be activated
+    // implicitly by its typescriptServerPlugins contribution when any JS/TS file
+    // is opened, so we must NOT fall back to process.cwd() here — the extension
+    // host's cwd is arbitrary (often the user's home directory), and downstream
+    // filesystem discovery (findCartridges / detectWorkspaceType) would then
+    // recursively scan it on the shared extension-host thread, freezing every
+    // other extension (W-23618508). Return no working directory so all
+    // discovery is skipped.
+    log.appendLine('[Config] No workspace folders open; skipping filesystem discovery (no working directory)');
+    return '';
   }
 
-  // Single-folder workspace — fast path
-  if (folders.length === 1) {
-    return folders[0].uri.fsPath;
-  }
-
-  // Multi-root: scan for B2C indicators
   const folderNames = folders.map((f) => f.uri.fsPath).join(', ');
-  log.appendLine(
-    `[Config] Multi-root workspace detected (${folders.length} folders: ${folderNames}), scanning for B2C project...`,
-  );
+  log.appendLine(`[Config] Scanning workspace folders for a B2C project (${folderNames})...`);
 
-  for (const folder of folders) {
-    const dwJsonPath = path.join(folder.uri.fsPath, DW_JSON);
-    if (await pathExists(dwJsonPath)) {
-      log.appendLine(`[Config] Selected workspace folder via dw.json: ${folder.uri.fsPath}`);
-      return folder.uri.fsPath;
-    }
+  const dwJson = await findWorkspaceDwJson();
+  if (dwJson) {
+    const projectDirectory = path.dirname(dwJson.fsPath);
+    log.appendLine(`[Config] Selected project directory via dw.json: ${projectDirectory}`);
+    return projectDirectory;
   }
 
   for (const folder of folders) {
@@ -114,6 +117,7 @@ export class B2CExtensionConfig implements vscode.Disposable {
   private resolved = false;
   private detectedDirectory = '';
   private pinned = false;
+  private resolvedEnvironment: Record<string, string | undefined>;
 
   private readonly _onDidReset = new vscode.EventEmitter<void>();
   readonly onDidReset = this._onDidReset.event;
@@ -123,7 +127,9 @@ export class B2CExtensionConfig implements vscode.Disposable {
   constructor(
     private readonly log: vscode.OutputChannel,
     private readonly workspaceState?: vscode.Memento,
+    private readonly ambientEnvironment: NodeJS.ProcessEnv = process.env,
   ) {
+    this.resolvedEnvironment = ambientEnvironment;
     // Watch for dw.json and .env saves made within VS Code (most reliable for in-editor edits)
     this.disposables.push(
       vscode.workspace.onDidSaveTextDocument((doc) => {
@@ -157,6 +163,19 @@ export class B2CExtensionConfig implements vscode.Disposable {
         this.log.appendLine(`[Config] File watcher registered for ${folder.uri.fsPath}/**/${filename}`);
       }
     }
+
+    const settingsPath = getB2CSettingsPath({environment: this.ambientEnvironment});
+    const settingsWatcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(path.dirname(settingsPath)), path.basename(settingsPath)),
+    );
+    const resetForSettingsChange = (): void => {
+      this.log.appendLine(`[Config] Shared settings changed: ${settingsPath}`);
+      this.reset();
+    };
+    settingsWatcher.onDidChange(resetForSettingsChange);
+    settingsWatcher.onDidCreate(resetForSettingsChange);
+    settingsWatcher.onDidDelete(resetForSettingsChange);
+    this.disposables.push(settingsWatcher);
   }
 
   getConfig(): ResolvedB2CConfig | null {
@@ -173,10 +192,33 @@ export class B2CExtensionConfig implements vscode.Disposable {
 
   /**
    * Returns the working directory used for config resolution.
-   * Either the pinned project root or the auto-detected workspace folder.
+   * Either the pinned project root or the auto-detected project directory.
    */
   getWorkingDirectory(): string {
     return this.detectedDirectory;
+  }
+
+  /** Return the ordered primary and global files used by instance-management features. */
+  getInstanceCatalogOptions(): ResolveConfigOptions {
+    const workingDirectory = this.detectedDirectory;
+    let projectConfigPath: string | undefined;
+    try {
+      projectConfigPath = readProjectEnvironment(workingDirectory)?.SFCC_CONFIG;
+    } catch {
+      // Configuration resolution reports malformed project environments separately.
+    }
+    const configPath =
+      this.ambientEnvironment.SFCC_CONFIG ||
+      (projectConfigPath && workingDirectory
+        ? path.isAbsolute(projectConfigPath)
+          ? projectConfigPath
+          : path.resolve(workingDirectory, projectConfigPath)
+        : undefined);
+    return {
+      workingDirectory,
+      configPath,
+      defaultConfigPath: readB2CSettings({environment: this.ambientEnvironment}).defaultConfigPath,
+    };
   }
 
   /**
@@ -224,6 +266,7 @@ export class B2CExtensionConfig implements vscode.Disposable {
     this.resolved = false;
     this.detectedDirectory = '';
     this.pinned = false;
+    this.resolvedEnvironment = this.ambientEnvironment;
     // Re-resolve asynchronously, then fire the event so listeners get fresh data
     void this.resolveAsync().then(() => {
       this._onDidReset.fire();
@@ -238,27 +281,40 @@ export class B2CExtensionConfig implements vscode.Disposable {
     workingDirectory: string,
     overrides: Partial<NormalizedConfig> = {},
   ): Promise<ResolvedB2CConfig> {
-    return resolveConfig(overrides, {workingDirectory});
+    const {config} = await this.resolveProjectConfiguration(workingDirectory, overrides);
+    return config;
   }
 
   /**
-   * Returns CreateOAuthOptions with VS Code-specific overrides for implicit auth:
+   * Returns CreateOAuthOptions with VS Code-specific overrides for browser-based
+   * user authentication (PKCE — and the legacy implicit flow):
    * - Uses `vscode.env.openExternal` to open the browser on the client (works in Codespaces/remote)
    * - Uses `vscode.env.asExternalUri` to resolve the redirect URI for port forwarding
    *
-   * Merge with any additional options before passing to `config.createOAuth()`.
+   * Merge with any additional options before passing to `config.createOAuth()`
+   * or `config.createB2CInstance()`.
    */
-  async getImplicitAuthOptions(): Promise<CreateOAuthOptions> {
-    const localPort = parseInt(process.env.SFCC_OAUTH_LOCAL_PORT || '', 10) || 8080;
+  async getUserAuthOptions(): Promise<CreateOAuthOptions> {
+    const localPort = parseInt(this.resolvedEnvironment.SFCC_OAUTH_LOCAL_PORT || '', 10) || 8080;
     const localUri = vscode.Uri.parse(`http://localhost:${localPort}`);
     const externalUri = await vscode.env.asExternalUri(localUri);
 
     return {
-      redirectUri: (process.env.SFCC_REDIRECT_URI || externalUri.toString(/* skipEncoding */ true)).replace(/\/$/, ''),
+      redirectUri: (
+        this.resolvedEnvironment.SFCC_REDIRECT_URI || externalUri.toString(/* skipEncoding */ true)
+      ).replace(/\/$/, ''),
       openBrowser: async (url: string) => {
         await vscode.env.openExternal(vscode.Uri.parse(url));
       },
     };
+  }
+
+  /**
+   * @deprecated Use {@link getUserAuthOptions}. Retained for callsite stability;
+   * the returned options work for both PKCE and legacy implicit flows.
+   */
+  async getImplicitAuthOptions(): Promise<CreateOAuthOptions> {
+    return this.getUserAuthOptions();
   }
 
   dispose(): void {
@@ -287,30 +343,24 @@ export class B2CExtensionConfig implements vscode.Disposable {
         workingDirectory = await detectWorkingDirectory(this.log);
         this.pinned = false;
       }
-      if (!workingDirectory || workingDirectory === '/' || !(await pathExists(workingDirectory))) {
+      // Never resolve config or run discovery out of a home/root directory or a
+      // path that no longer exists. isUnscannableRoot() also covers ''/'/' — a
+      // home-directory-as-folder layout must not trigger recursive scans that
+      // would stall the extension host (W-23618508).
+      if (isUnscannableRoot(workingDirectory) || !(await pathExists(workingDirectory))) {
+        if (workingDirectory) {
+          this.log.appendLine(
+            `[Config] Working directory ${workingDirectory} is a home/root or missing path; skipping discovery`,
+          );
+        }
         workingDirectory = '';
       }
       this.detectedDirectory = workingDirectory;
       this.log.appendLine(`[Config] Resolving config from ${workingDirectory || '(no working directory)'}`);
 
-      // Load .env file if present (same as CLI's bin/run.js).
-      // process.loadEnvFile is intentionally synchronous (Node API); we just gate
-      // it on an async existence check so we don't hit the disk twice on the hot path.
-      if (workingDirectory) {
-        const envFilePath = path.join(workingDirectory, DOT_ENV);
-        try {
-          if (typeof process.loadEnvFile === 'function' && (await pathExists(envFilePath))) {
-            process.loadEnvFile(envFilePath);
-            this.log.appendLine(`[Config] Loaded .env file: ${envFilePath}`);
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          this.log.appendLine(`[Config] Failed to load .env file: ${message}`);
-        }
-      }
-
-      const config = await resolveConfig({}, {workingDirectory, sourcesBefore: [new EnvSource()]});
+      const {config, environment} = await this.resolveProjectConfiguration(workingDirectory);
       this.config = config;
+      this.resolvedEnvironment = environment;
 
       if (!config.hasB2CInstanceConfig()) {
         this.configError = 'No B2C Commerce instance configured.';
@@ -330,5 +380,47 @@ export class B2CExtensionConfig implements vscode.Disposable {
       this.instance = null;
       this.log.appendLine(`[Config] Resolution failed: ${message}`);
     }
+  }
+
+  private async resolveProjectConfiguration(
+    workingDirectory: string,
+    overrides: Partial<NormalizedConfig> = {},
+  ): Promise<{config: ResolvedB2CConfig; environment: Record<string, string | undefined>}> {
+    let projectEnvironment: Record<string, string | undefined> | undefined;
+    if (workingDirectory) {
+      const environmentPath = path.join(workingDirectory, DOT_ENV);
+      try {
+        projectEnvironment = readProjectEnvironment(workingDirectory);
+        if (projectEnvironment) this.log.appendLine(`[Config] Loaded project environment: ${environmentPath}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.log.appendLine(`[Config] Failed to load project environment: ${message}`);
+      }
+    }
+
+    const environment = mergeProjectEnvironment(projectEnvironment, this.ambientEnvironment);
+    const processConfigPath = this.ambientEnvironment.SFCC_CONFIG || undefined;
+    const projectConfigPath = projectEnvironment?.SFCC_CONFIG;
+    const configPath =
+      processConfigPath ??
+      (projectConfigPath && workingDirectory
+        ? path.isAbsolute(projectConfigPath)
+          ? projectConfigPath
+          : path.resolve(workingDirectory, projectConfigPath)
+        : undefined);
+    if (configPath) this.log.appendLine(`[Config] Using explicit config path: ${configPath}`);
+
+    const {defaultConfigPath} = readB2CSettings({environment: this.ambientEnvironment});
+    if (defaultConfigPath) {
+      this.log.appendLine(`[Config] Global dw.json: ${defaultConfigPath}`);
+    }
+
+    const config = await resolveConfig(overrides, {
+      workingDirectory,
+      configPath,
+      defaultConfigPath,
+      sourcesBefore: [new EnvSource(environment)],
+    });
+    return {config, environment};
   }
 }

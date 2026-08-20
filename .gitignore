@@ -2,11 +2,13 @@
 *-error.log
 **/.DS_Store
 /.idea
+/.codex/
 dist
 dist-deploy
 /tmp
 node_modules
 /coverage
+coverage/
 oclif.manifest.json
 *.tsbuildinfo
 

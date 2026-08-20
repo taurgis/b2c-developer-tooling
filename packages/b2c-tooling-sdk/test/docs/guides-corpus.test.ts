@@ -31,6 +31,31 @@ const hasGuides = fs.existsSync(GUIDES_INDEX);
 const hasTooling = fs.existsSync(TOOLING_INDEX);
 const hasHelp = fs.existsSync(HELP_INDEX);
 
+const INTERNAL_TOOLING_DOC_ROOTS = ['guide', 'cli', 'mcp', 'vscode-extension'];
+
+function discoverInternalToolingDocIds(): string[] {
+  const docsRoot = path.resolve(packageRoot, '../..', 'docs');
+  const ids: string[] = [];
+
+  const visit = (directory: string): void => {
+    for (const entry of fs.readdirSync(directory, {withFileTypes: true})) {
+      const absolutePath = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        visit(absolutePath);
+      } else if (entry.isFile() && entry.name.endsWith('.md') && entry.name.toLowerCase() !== 'readme.md') {
+        const content = fs.readFileSync(absolutePath, 'utf-8');
+        if (/http-equiv['"]?\s*:\s*['"]?refresh/i.test(content)) continue;
+        ids.push(
+          path.relative(docsRoot, absolutePath).split(path.sep).join('/').replace(/\.md$/, '').replace(/\//g, '-'),
+        );
+      }
+    }
+  };
+
+  for (const root of INTERNAL_TOOLING_DOC_ROOTS) visit(path.join(docsRoot, root));
+  return ids.sort();
+}
+
 describe('docs: Developer Center guides corpus', function () {
   before(function () {
     if (!hasGuides) this.skip();
@@ -54,6 +79,31 @@ describe('docs: Developer Center guides corpus', function () {
     expect(entry.sourceUrl).to.match(/^https:\/\/developer\.salesforce\.com\/docs\/commerce\/sfnext\/guide\/.+\.md$/);
     expect(entry.sourceUrl).to.equal(entry.url!.replace(/\.html$/, '.md'));
     expect(entry.filePath, 'guides are online-only, not bundled').to.equal(undefined);
+  });
+
+  it('preserves immediate Developer Center TOC neighbors as bidirectional related entries', () => {
+    const guides = listDocs().filter((entry) =>
+      ['commerce-api', 'pwa-kit-managed-runtime', 'sfnext', 'sfra', 'b2c-commerce'].includes(entry.category ?? ''),
+    );
+    const byId = new Map(guides.map((entry) => [entry.id, entry]));
+    const workflow = byId.get('b2c-commerce/developer-workflow');
+    const quickStart = byId.get('b2c-commerce/quick-start-landing-page');
+
+    expect(workflow?.relatedEntries).to.include('b2c-commerce/quick-start-landing-page');
+    expect(quickStart?.relatedEntries).to.include('b2c-commerce/developer-workflow');
+    expect(quickStart?.relatedEntries).to.include('b2c-commerce/b2c-developer-tooling');
+    expect(workflow?.relatedEntries).not.to.include('b2c-commerce/b2c-developer-tooling');
+    expect(byId.get('b2c-commerce/build-your-site')?.relatedEntries).to.include(
+      'commerce-api/hybrid-storefront-baskets',
+    );
+
+    for (const entry of guides) {
+      for (const relatedId of entry.relatedEntries ?? []) {
+        const related = byId.get(relatedId);
+        expect(related, `${entry.id} references missing guide ${relatedId}`).to.not.equal(undefined);
+        expect(related!.relatedEntries, `${entry.id} -> ${relatedId} is not bidirectional`).to.include(entry.id);
+      }
+    }
   });
 
   it('Script API entries carry durable .html url + .md sourceUrl and defer content online', () => {
@@ -149,7 +199,7 @@ describe('docs: Developer Center guides corpus', function () {
 
   describe('workspace awareness (search)', () => {
     it('boosts a workspace-relevant category but hides nothing', () => {
-      const pwa = searchDocs('components', {workspace: 'pwa-kit-v3', limit: 20});
+      const pwa = searchDocs('components', {workspace: 'pwa-kit-v3', limit: 100});
       // A PWA Kit guide ranks first for this cross-workspace term...
       expect(pwa[0].entry.category).to.equal('pwa-kit-managed-runtime');
       // ...but other categories are still present (a workspace never filters).
@@ -275,6 +325,7 @@ describe('docs: Developer Center guides corpus', function () {
       sourceUrl: 'https://developer.salesforce.com/docs/commerce/sfnext/guide/__test__.md',
       headings: 'Section A • Section B',
       summary: 'A test guide used to exercise the offline fallback path.',
+      relatedEntries: ['sfnext/related-guide'],
     };
     // Clear the cache so the (failing) fetch path is exercised, not a cache hit.
     clearContentCache(true);
@@ -286,6 +337,7 @@ describe('docs: Developer Center guides corpus', function () {
       expect(content).to.include('# Test Guide');
       expect(content).to.include('A test guide used to exercise the offline fallback path.');
       expect(content).to.include('Section A');
+      expect(content).to.include('sfnext/related-guide');
       expect(content).to.include('could not be fetched');
       // Both retrieval URLs are surfaced so a caller can retry on its own.
       expect(content, 'fallback includes the HTML page URL').to.include(entry.url!);
@@ -336,6 +388,13 @@ describe('docs: tooling corpus', function () {
     expect(tooling.every((e) => !!e.sourceUrl)).to.equal(true);
   });
 
+  it('indexes every searchable internal tooling documentation page', () => {
+    const indexedIds = new Set(listDocs('tooling').map((entry) => entry.id));
+    for (const id of discoverInternalToolingDocIds()) {
+      expect(indexedIds.has(id), `missing internal tooling doc ${id}`).to.equal(true);
+    }
+  });
+
   it('fetches tooling content online from sourceUrl (the .md)', async () => {
     const auth = listDocs('tooling').find((e) => e.id.includes('authentication'));
     expect(auth, 'expected an authentication tooling doc').to.not.equal(undefined);
@@ -384,6 +443,53 @@ describe('docs: Salesforce Help corpus', function () {
       expect(fetchedUrl, 'help content must be fetched from the online sourceUrl').to.equal(entry!.sourceUrl);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves DITA child-topic navigation as related entry metadata', () => {
+    const pageDesigner = listDocs('help-merchant').find((entry) => entry.id === 'help-merchant/b2c_cb_page_designer');
+    expect(pageDesigner).to.not.equal(undefined);
+    expect(pageDesigner!.relatedEntries).to.deep.equal([
+      'help-merchant/b2c_cb_save_as',
+      'help-merchant/b2c_cb_add_to_page',
+      'help-merchant/b2c_cb_edit',
+      'help-merchant/b2c_cb_remove_from_page',
+    ]);
+  });
+
+  it('does not expose topics merged into a chunked page as separate related entries', () => {
+    const chunkedPage = listDocs('help-merchant').find((entry) => entry.id === 'help-merchant/b2c_localize_bulk_pages');
+    expect(chunkedPage).to.not.equal(undefined);
+    expect(chunkedPage!.relatedEntries).to.equal(undefined);
+  });
+
+  it('excludes topics marked for future publication', () => {
+    const futureTopic = listDocs('help-admin').find((entry) => entry.id === 'help-admin/b2c_metrics_third_party');
+    expect(futureTopic).to.equal(undefined);
+  });
+
+  it('indexes direct topics from composite Help maps', () => {
+    const helpEntries = [...listDocs('help-admin'), ...listDocs('help-merchant')];
+    const ids = new Set(helpEntries.map((entry) => entry.id));
+    for (const id of [
+      'help-admin/b2c_getting_started',
+      'help-admin/b2c_default_domain',
+      'help-admin/b2c_incorporate_third-party_apps',
+      'help-merchant/b2c_merchandising_your_site',
+      'help-merchant/b2c_multi_currency_sites',
+      'help-merchant/b2c_batch_processing',
+    ]) {
+      expect(ids.has(id), `missing direct topic from composite map: ${id}`).to.equal(true);
+    }
+  });
+
+  it('only emits related entry ids that resolve within the corpus', () => {
+    const helpEntries = [...listDocs('help-admin'), ...listDocs('help-merchant')];
+    const ids = new Set(helpEntries.map((entry) => entry.id));
+    for (const entry of helpEntries) {
+      for (const relatedId of entry.relatedEntries ?? []) {
+        expect(ids.has(relatedId), `${entry.id} references missing entry ${relatedId}`).to.equal(true);
+      }
     }
   });
 });

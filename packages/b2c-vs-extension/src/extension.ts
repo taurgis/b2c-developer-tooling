@@ -4,14 +4,17 @@
  * For full license text, see the license.txt file in the repo root or http://www.apache.org/licenses/LICENSE-2.0
  */
 import {DwJsonSource} from '@salesforce/b2c-tooling-sdk/config';
+import {setAuthSessionBackend} from '@salesforce/b2c-tooling-sdk/auth';
 import {detectWorkspaceType} from '@salesforce/b2c-tooling-sdk/discovery';
 import {configureLogger} from '@salesforce/b2c-tooling-sdk/logging';
+import {VsCodeSecretsAuthSessionBackend} from './pkce-secret-store.js';
 
 import * as cp from 'child_process';
 import * as https from 'https';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import {B2CExtensionConfig} from './config-provider.js';
+import {workspaceHasDwJson, isUnscannableRoot, WORKSPACE_DISCOVERY_MAX_DEPTH} from './workspace-discovery.js';
 import {CartridgeService} from './cartridges/cartridge-service.js';
 import {registerCap} from './cap/index.js';
 import {registerJobLogViewer} from './job-log-viewer.js';
@@ -42,6 +45,8 @@ import {
   OnboardingStateStore,
   OnboardingPanel,
 } from './walkthrough/index.js';
+
+let authSessionBackend: VsCodeSecretsAuthSessionBackend | undefined;
 
 function applyLogLevel(log: vscode.OutputChannel): void {
   const config = vscode.workspace.getConfiguration('b2c-dx');
@@ -83,10 +88,23 @@ async function updateStorefrontNextContext(
   log: vscode.OutputChannel,
 ): Promise<void> {
   const workingDir = configProvider.getWorkingDirectory();
-  log.appendLine(`[Workspace] Running detectWorkspaceType for cwd=${workingDir}`);
   let isStorefrontNext = false;
+  // Only run recursive workspace detection out of a concrete workspace folder.
+  // When there is no working directory (empty window) or it resolves to a
+  // home/root directory, skip it entirely: detectWorkspaceType('') would fall
+  // back to process.cwd() and recursively scan it on the extension-host thread
+  // (W-23618508). isUnscannableRoot('') is true, so this also covers the empty
+  // case.
+  if (isUnscannableRoot(workingDir)) {
+    log.appendLine('[Workspace] No concrete workspace folder; skipping storefront-next detection');
+    await vscode.commands.executeCommand('setContext', 'b2c-dx.isStorefrontNext', false);
+    return;
+  }
+  log.appendLine(`[Workspace] Running detectWorkspaceType for cwd=${workingDir}`);
   try {
-    const result = await detectWorkspaceType(workingDir);
+    // Depth-bound the scan as defense-in-depth so a deep tree can't stall
+    // activation (mirrors the MCP server's DISCOVERY_MAX_DEPTH).
+    const result = await detectWorkspaceType(workingDir, {maxDepth: WORKSPACE_DISCOVERY_MAX_DEPTH});
     log.appendLine(
       `[Workspace] Detection result: projectTypes=[${result.projectTypes.join(', ')}] matchedPatterns=[${result.matchedPatterns.join(', ')}]`,
     );
@@ -257,6 +275,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export async function deactivate(): Promise<void> {
   sendEvent('EXTENSION_DEACTIVATED');
+  await authSessionBackend?.flush();
+  authSessionBackend = undefined;
+  setAuthSessionBackend(null);
   await disposeTelemetry();
 }
 
@@ -499,6 +520,14 @@ async function activateInner(context: vscode.ExtensionContext, log: vscode.Outpu
 
   registerJobLogViewer(context);
 
+  // Persist auth sessions via VS Code SecretStorage (OS keychain on
+  // macOS/Windows/Linux, encrypted fallback otherwise — handled by VS Code).
+  // Hydrate the in-memory snapshot before registering, so the SDK's sync
+  // reads see existing sessions on first call.
+  authSessionBackend = new VsCodeSecretsAuthSessionBackend(context);
+  await authSessionBackend.hydrate();
+  setAuthSessionBackend(authSessionBackend);
+
   const configProvider = new B2CExtensionConfig(log, context.workspaceState);
   lateConfigProvider = configProvider;
   context.subscriptions.push(configProvider);
@@ -527,18 +556,7 @@ async function activateInner(context: vscode.ExtensionContext, log: vscode.Outpu
   configProvider.onDidReset(() => updateInstanceConnectedContext());
 
   const updateDwJsonContext = async () => {
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    let exists = false;
-    for (const folder of folders) {
-      try {
-        await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'dw.json'));
-        exists = true;
-        break;
-      } catch {
-        // not in this folder
-      }
-    }
-    await vscode.commands.executeCommand('setContext', 'b2c-dx.dwJsonExists', exists);
+    await vscode.commands.executeCommand('setContext', 'b2c-dx.dwJsonExists', await workspaceHasDwJson());
   };
   void updateDwJsonContext();
   const dwJsonWatcher = vscode.workspace.createFileSystemWatcher('**/dw.json');
@@ -577,6 +595,7 @@ async function activateInner(context: vscode.ExtensionContext, log: vscode.Outpu
   // --- Active instance status bar ---
   const dwJsonSource = new DwJsonSource();
   const getWorkingDirectory = () => configProvider.getWorkingDirectory();
+  const getInstanceCatalogOptions = () => configProvider.getInstanceCatalogOptions();
 
   const instanceStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 50);
   instanceStatusBar.command = 'b2c-dx.instance.switch';
@@ -596,7 +615,7 @@ async function activateInner(context: vscode.ExtensionContext, log: vscode.Outpu
       // of the clearer "Not configured" state.
       if (config?.hasB2CInstanceConfig()) {
         // Find active instance name from dw.json
-        const instances = await dwJsonSource.listInstances({workingDirectory: getWorkingDirectory()});
+        const instances = await dwJsonSource.listInstances(getInstanceCatalogOptions());
         const active = instances.find((i) => i.active);
         const name = active?.name;
         const host = config.values.hostname ?? '';
@@ -670,8 +689,7 @@ async function activateInner(context: vscode.ExtensionContext, log: vscode.Outpu
   });
 
   const switchInstanceDisposable = registerSafeCommand('b2c-dx.instance.switch', async () => {
-    const workingDirectory = getWorkingDirectory();
-    const instances = await dwJsonSource.listInstances({workingDirectory});
+    const instances = await dwJsonSource.listInstances(getInstanceCatalogOptions());
 
     if (instances.length === 0) {
       vscode.window.showWarningMessage('No instances configured in dw.json.');
@@ -703,7 +721,7 @@ async function activateInner(context: vscode.ExtensionContext, log: vscode.Outpu
     }
 
     try {
-      await dwJsonSource.setActiveInstance(picked.instance.name, {workingDirectory});
+      await dwJsonSource.setActiveInstance(picked.instance.name, getInstanceCatalogOptions());
       // The FileSystemWatcher will detect the dw.json change and trigger reset,
       // but fire manually in case the watcher is slow
       configProvider.reset();
@@ -857,19 +875,7 @@ async function activateInner(context: vscode.ExtensionContext, log: vscode.Outpu
   // Drop the per-workspace onboarding panel state (persona + step records)
   // when the workspace has no dw.json, so the deep-dive panel reopens with no
   // selection. Cheap to call: workspaceState writes are local.
-  const workspaceHasDwJson = await (async () => {
-    const folders = vscode.workspace.workspaceFolders ?? [];
-    for (const folder of folders) {
-      try {
-        await vscode.workspace.fs.stat(vscode.Uri.joinPath(folder.uri, 'dw.json'));
-        return true;
-      } catch {
-        // keep checking
-      }
-    }
-    return false;
-  })();
-  if (!workspaceHasDwJson) {
+  if (!(await workspaceHasDwJson())) {
     await onboardingStore.reset();
   }
 
